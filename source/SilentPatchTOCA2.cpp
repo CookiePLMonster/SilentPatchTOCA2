@@ -2,9 +2,12 @@
 #define NOMINMAX
 
 #include <windows.h>
+#include <ddraw.h>
 
 #include "Utils/MemoryMgr.h"
 #include "Utils/Patterns.h"
+
+#include <vector>
 
 bool* m_isWindowActive;
 namespace Timers
@@ -76,6 +79,77 @@ namespace Timers
 	}
 }
 
+struct {
+	uint32_t width, height;
+} *m_currentRes;
+
+namespace ResolutionList
+{
+	struct Resolution
+	{
+		Resolution(uint32_t width, uint32_t height, uint32_t bitness)
+			: width(width), height(height), bitness(bitness)
+		{
+		}
+
+		uint32_t width, height, bitness;
+	};
+	std::vector<Resolution> resolutionsList;
+	BOOL __stdcall AddResolution(uint32_t width, uint32_t height, uint32_t bitness)
+	{
+		if (std::find_if(resolutionsList.begin(), resolutionsList.end(), [width, height](const Resolution& e) {
+			return width == e.width && height == e.height;
+		}) != resolutionsList.end()) return FALSE;
+
+		resolutionsList.emplace_back(width, height, bitness);
+		return TRUE;
+	}
+
+	BOOL __stdcall CurrentResolutionExists()
+	{
+		return std::find_if(resolutionsList.begin(), resolutionsList.end(), [](const Resolution& e) {
+			return m_currentRes->width == e.width && m_currentRes->height == e.height;
+		}) != resolutionsList.end() ? TRUE : FALSE;
+	}
+
+	BOOL __stdcall TrySetPreviousResolution()
+	{
+		auto it = std::find_if(resolutionsList.begin(), resolutionsList.end(), [](const Resolution& e) {
+			return m_currentRes->width == e.width && m_currentRes->height == e.height;
+		});
+		if (it == resolutionsList.end()) return FALSE;
+
+		if (it != resolutionsList.begin())
+		{
+			auto previous = std::prev(it);
+			m_currentRes->width = previous->width;
+			m_currentRes->height = previous->height;
+			return TRUE;
+		}
+		return FALSE;
+	}
+
+	uint32_t __stdcall GetPackedResolution(int index)
+	{
+		auto& res = resolutionsList[index];
+		return (res.width & 0xFFFF) | ((res.height & 0xFFFF) << 16);
+	}
+
+	uint32_t __stdcall GetNumResolutions()
+	{
+		return static_cast<uint32_t>(resolutionsList.size());
+	}
+
+	static HRESULT WINAPI EnumDisplayModeCB(LPDDSURFACEDESC pSurfaceDesc, LPVOID)
+	{
+		if (pSurfaceDesc->dwWidth >= 640 && pSurfaceDesc->dwHeight >= 480 && pSurfaceDesc->ddpfPixelFormat.dwBumpBitCount == 16)
+		{
+			AddResolution(pSurfaceDesc->dwWidth, pSurfaceDesc->dwHeight, 0);
+		}
+		return DDENUMRET_OK;
+	}
+}
+
 void OnInitializeHook()
 {
 	std::unique_ptr<ScopedUnprotect::Unprotect> Protect = ScopedUnprotect::UnprotectSectionOrFullModule( GetModuleHandle( nullptr ), ".text" );
@@ -104,6 +178,33 @@ void OnInitializeHook()
 		InjectHook(init_timers, InitTimers, PATCH_JUMP);
 		InjectHook(tick_timers, TickTimers, PATCH_JUMP);
 		InjectHook(wait_timer, WaitTimer, PATCH_JUMP);
+	}
+	TXN_CATCH();
+
+	// Unlimited resolutions list + allowed for all resolutions
+	// Filtering out resolutions under 640x480
+	try
+	{
+		using namespace ResolutionList;
+
+		auto on_enum_resolution = get_pattern("68 ? ? ? ? 6A 00 6A 00 8B 08 6A 01", 1);
+		auto res_exists = get_pattern("33 C9 56 85 D2", -6);
+		auto try_set_previous_res = get_pattern("53 33 DB 33 C0", -6);
+		auto get_packed_res = get_pattern("C1 E0 02 66 8B 88", -7);
+		auto get_num_resolutions_ptr = get_pattern("E8 ? ? ? ? 68 ? ? ? ? 8B E8");
+
+		auto current_resx = *get_pattern<decltype(m_currentRes)>("8B 3D ? ? ? ? B8 ? ? ? ? 3B 78 FC", 2);
+
+		m_currentRes = current_resx;
+
+		Patch(on_enum_resolution, EnumDisplayModeCB);
+		InjectHook(res_exists, CurrentResolutionExists, PATCH_JUMP);
+		InjectHook(try_set_previous_res, TrySetPreviousResolution, PATCH_JUMP);
+		InjectHook(get_packed_res, GetPackedResolution, PATCH_JUMP);
+
+		void* get_num_resolutions;
+		ReadCall(get_num_resolutions_ptr, get_num_resolutions);
+		InjectHook(get_num_resolutions, GetNumResolutions, PATCH_JUMP);
 	}
 	TXN_CATCH();
 }
