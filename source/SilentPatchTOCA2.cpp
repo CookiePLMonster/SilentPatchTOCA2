@@ -150,6 +150,45 @@ namespace ResolutionList
 	}
 }
 
+namespace WidescreenFix
+{
+	// Cheap detour
+	static void* SetViewport_ThunkEnd;
+	static WRAPPER void __stdcall SetViewport_Thunk(int /*width*/, int /*unk1*/, int /*unk2*/, int /*unk3*/, int /*height*/, int /*unk4*/)
+	{
+		__asm
+		{
+			push ecx
+			fild dword ptr [esp+4+14h]
+			jmp  [SetViewport_ThunkEnd]
+		}
+	}
+
+	static float horizontalFOV = 2.0f;
+	static float verticalFOV = 2.5f;
+	void __stdcall SetViewport_CalculateAR(int width, int unk1, int unk2, int unk3, int height, int unk4)
+	{
+		// TODO: Adjustable FOV
+		const double currentInvAR = static_cast<double>(m_currentRes->height) / m_currentRes->width;
+
+		constexpr double AR_CONSTANT = 2.0 * 4.0 / 3.0; // 2.0f * (4/3)
+		horizontalFOV = static_cast<float>(AR_CONSTANT * currentInvAR);
+
+		SetViewport_Thunk(width, unk1, unk2, unk3, height, unk4);
+	}
+
+	WRAPPER void MultByFOV()
+	{
+		__asm
+		{
+			fmul [horizontalFOV]
+			fxch st(2)
+			fmul [verticalFOV]
+			retn
+		}
+	}
+}
+
 void OnInitializeHook()
 {
 	std::unique_ptr<ScopedUnprotect::Unprotect> Protect = ScopedUnprotect::UnprotectSectionOrFullModule( GetModuleHandle( nullptr ), ".text" );
@@ -205,6 +244,23 @@ void OnInitializeHook()
 		void* get_num_resolutions;
 		ReadCall(get_num_resolutions_ptr, get_num_resolutions);
 		InjectHook(get_num_resolutions, GetNumResolutions, PATCH_JUMP);
+	}
+	TXN_CATCH();
+
+	// Arbitrary aspect ratio and FOV support
+	try
+	{
+		using namespace WidescreenFix;
+
+		auto set_viewport = pattern("DB 44 24 08 DB 44 24 0C D9 C2").get_one();
+		auto calculate_fov = pattern("D8 74 24 00 D9 44 24 0C").get_one();
+
+		SetViewport_ThunkEnd = set_viewport.get<void>();
+		InjectHook(set_viewport.get<void>(-5), SetViewport_CalculateAR, PATCH_JUMP);
+
+		// Adjustable FOV
+		InjectHook(calculate_fov.get<void>(10), MultByFOV, PATCH_CALL);
+		Nop(calculate_fov.get<void>(10 + 5), 5);
 	}
 	TXN_CATCH();
 }
