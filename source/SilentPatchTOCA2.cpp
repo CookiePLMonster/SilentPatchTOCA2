@@ -189,6 +189,8 @@ namespace WidescreenFix
 	}
 }
 
+static double HUDScale = 1.0/800.0;
+
 void OnInitializeHook()
 {
 	std::unique_ptr<ScopedUnprotect::Unprotect> Protect = ScopedUnprotect::UnprotectSectionOrFullModule( GetModuleHandle( nullptr ), ".text" );
@@ -261,6 +263,20 @@ void OnInitializeHook()
 		// Adjustable FOV
 		InjectHook(calculate_fov.get<void>(10), MultByFOV, PATCH_CALL);
 		Nop(calculate_fov.get<void>(10 + 5), 5);
+	}
+	TXN_CATCH();
+
+	// Fixed and customizable HUD scale
+	try
+	{
+		auto cmp_1000 = get_pattern("3D ? ? ? ? 57 76 3D", 1);
+		auto scale_values = pattern("DC 0D ? ? ? ? D9 C9 DC 0D ? ? ? ? D9 C9 D9 1D ? ? ? ? D9 1D ? ? ? ? EB 14").get_one();
+		auto res_scale_y = get_pattern("76 3D 89 44 24 10", 6);
+
+		Patch<uint32_t>(cmp_1000, 800);
+		Patch(scale_values.get<void>(2), &HUDScale);
+		Patch(scale_values.get<void>(8 + 2), &HUDScale);
+		Nop(res_scale_y, 5);
 	}
 	TXN_CATCH();
 }
