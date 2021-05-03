@@ -189,7 +189,7 @@ namespace WidescreenFix
 	}
 }
 
-static double HUDScale = 1.0/800.0;
+static double HUDScale = 1.0/480.0;
 
 void OnInitializeHook()
 {
@@ -271,12 +271,14 @@ void OnInitializeHook()
 	{
 		auto cmp_1000 = get_pattern("3D ? ? ? ? 57 76 3D", 1);
 		auto scale_values = pattern("DC 0D ? ? ? ? D9 C9 DC 0D ? ? ? ? D9 C9 D9 1D ? ? ? ? D9 1D ? ? ? ? EB 14").get_one();
-		auto res_scale_y = get_pattern("76 3D 89 44 24 10", 6);
+		auto res_scale_x = get_pattern<int*>("A1 ? ? ? ? 83 EC 08 53", 1);
+		auto res_scale_y = get_pattern<int*>("A1 ? ? ? ? 89 5C 24 14", 1);
 
-		Patch<uint32_t>(cmp_1000, 800);
+		Patch<uint32_t>(cmp_1000, 480);
 		Patch(scale_values.get<void>(2), &HUDScale);
 		Patch(scale_values.get<void>(8 + 2), &HUDScale);
-		Nop(res_scale_y, 5);
+
+		Patch(res_scale_x, *res_scale_y);
 	}
 	TXN_CATCH();
 }
