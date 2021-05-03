@@ -190,6 +190,7 @@ namespace WidescreenFix
 }
 
 static double HUDScale = 1.0/480.0;
+static double GameMenuScale = 1.0/480.0;
 
 void OnInitializeHook()
 {
@@ -279,6 +280,88 @@ void OnInitializeHook()
 		Patch(scale_values.get<void>(8 + 2), &HUDScale);
 
 		Patch(res_scale_x, *res_scale_y);
+	}
+	TXN_CATCH();
+
+	// Fixed and customizable pause menu scale
+	try
+	{
+		auto ctor_res_scale_x = get_pattern<int*>("A1 ? ? ? ? 56 33 F6 89 44 24 04", 1);
+		auto ctor_res_scale_y = get_pattern<int*>("8B 0D ? ? ? ? DF 6C 24 04", 2);
+		void* scale_values[] = {
+			get_pattern("DC 0D ? ? ? ? 8B 4C 24 18", 2),
+			get_pattern("DC 0D ? ? ? ? D9 1D ? ? ? ? E8 ? ? ? ? 89 35", 2),
+		};
+		void* cmp_1000[] = {
+			get_pattern("BF ? ? ? ? C6 45 FC FF", 1),
+			get_pattern("BF ? ? ? ? 39 3D ? ? ? ? 76 0F", 1),
+		};
+
+		Patch(ctor_res_scale_x, *ctor_res_scale_y);
+		for (void* addr : scale_values)
+		{
+			Patch(addr, &GameMenuScale);
+		}
+		for (void* addr : cmp_1000)
+		{
+			Patch<uint32_t>(addr, 640);
+		}
+	}
+	TXN_CATCH();
+
+	// Fixed and customizable pre-race menu scale
+	try
+	{
+		auto ctor_res_scale_x = get_pattern<int*>("A1 ? ? ? ? 83 EC 08 3D", 1);
+		auto ctor_res_scale_y = get_pattern<int*>("89 44 24 00 A1", 4 + 1);
+		auto scale_values = pattern("DF 6C 24 00 D9 C9").get_one();
+		void* cmp_1000_y[] = {
+			get_pattern("3D ? ? ? ? 76 43", 1),
+		};
+		void* cmp_1000_x[] = {
+			get_pattern("81 3D ? ? ? ? ? ? ? ? 76 29", 6),
+			get_pattern("81 3D ? ? ? ? ? ? ? ? 76 0F", 6),
+		};
+
+		Patch(ctor_res_scale_x, *ctor_res_scale_y);
+		Patch(scale_values.get<void>(6 + 2), &GameMenuScale);
+		Patch(scale_values.get<void>(14 + 2), &GameMenuScale);
+		for (void* addr : cmp_1000_y)
+		{
+			Patch<uint32_t>(addr, 480);
+		}
+		for (void* addr : cmp_1000_x)
+		{
+			Patch<uint32_t>(addr, 640);
+		}
+	}
+	TXN_CATCH();
+
+	// Fixed and customizable loading screen text scale
+	try
+	{
+		auto ctor_res_scale_x = get_pattern<int*>("66 89 44 24 ? A1 ? ? ? ? 56", 5 + 1);
+		auto ctor_res_scale_y = get_pattern<int*>("76 30 8B 0D", 2 + 2);
+		auto cmp_1000 = get_pattern("3D ? ? ? ? 57 66 89 6C 24", 1);
+		auto scale_values = pattern("DC 0D ? ? ? ? D9 C9 DC 0D ? ? ? ? EB 0C").get_one();
+
+		Patch(ctor_res_scale_x, *ctor_res_scale_y);
+		Patch<uint32_t>(cmp_1000, 480);
+		Patch(scale_values.get<void>(2), &GameMenuScale);
+		Patch(scale_values.get<void>(8 + 2), &GameMenuScale);
+	}
+	TXN_CATCH();
+
+	// Fixed and customizable post-race screen scale
+	try
+	{
+		auto cmp_1000_x = pattern("89 5C 24 6C BE ? ? ? ? 0F 85 2B 02 00 00 A1").get_one();
+
+		Patch(cmp_1000_x.get<int*>(0xF + 1), *cmp_1000_x.get<int*>(0x60 + 1)); // Res scale X -> Res scale Y
+		Nop(cmp_1000_x.get<void>(0x19), 2); // Scale X unconditionally
+		Nop(cmp_1000_x.get<void>(0x6A), 2); // Scale Y unconditionally
+		Patch(cmp_1000_x.get<void>(0x27 + 2), &GameMenuScale);
+		Patch(cmp_1000_x.get<void>(0x78 + 2), &GameMenuScale);
 	}
 	TXN_CATCH();
 }
