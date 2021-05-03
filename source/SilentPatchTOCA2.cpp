@@ -364,4 +364,12 @@ void OnInitializeHook()
 		Patch(cmp_1000_x.get<void>(0x78 + 2), &GameMenuScale);
 	}
 	TXN_CATCH();
+
+	// Remove CD check
+	try
+	{
+		auto cd_check = get_pattern("F3 A4 E8 ? ? ? ? 85 DB", 9);
+		Nop(cd_check, 10);
+	}
+	TXN_CATCH();
 }
