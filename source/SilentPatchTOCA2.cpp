@@ -236,6 +236,29 @@ namespace DynamicAllocList
 static double HUDScale = 1.0/480.0;
 static double GameMenuScale = 1.0/480.0;
 
+namespace DecalsCrashFix
+{
+	struct CarDetails
+	{
+		std::byte pad[16];
+		uint8_t m_carID;
+		std::byte pad2[71];
+	};
+	static_assert(sizeof(CarDetails) == 88);
+	static_assert(offsetof(CarDetails, m_carID) == 16);
+
+	static CarDetails** gCarsInRaceDetails;
+	static void (__stdcall* orgInitializeDecals)();
+	void __stdcall InitializeDecals_IDCheck()
+	{
+		const CarDetails* details = *gCarsInRaceDetails;
+		if (details[0].m_carID < 8)
+		{
+			orgInitializeDecals();
+		}
+	}
+}
+
 void OnInitializeHook()
 {
 	std::unique_ptr<ScopedUnprotect::Unprotect> Protect = ScopedUnprotect::UnprotectSectionOrFullModule( GetModuleHandle( nullptr ), ".text" );
@@ -467,6 +490,21 @@ void OnInitializeHook()
 				Patch<void**>(addr, mem+currentAllocCapacity);	
 			}
 		};
+	}
+	TXN_CATCH();
+
+	// Fix a crash when minimizing during a support car race
+	// Windshield decals attempt to reinitialize when they shouldn't (those cars have no decals)
+	try
+	{
+		using namespace DecalsCrashFix;
+
+		auto init_decals = get_pattern("E8 ? ? ? ? E8 ? ? ? ? 85 C0 74 05 E8 ? ? ? ? E8 ? ? ? ? B8");
+		auto cars_in_race_details = *get_pattern<CarDetails**>("8B 0D ? ? ? ? 8A 44 01 10", 2);
+
+		ReadCall(init_decals, orgInitializeDecals);
+		InjectHook(init_decals, InitializeDecals_IDCheck);
+		gCarsInRaceDetails = cars_in_race_details;
 	}
 	TXN_CATCH();
 }
