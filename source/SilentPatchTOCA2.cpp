@@ -7,6 +7,7 @@
 #include "Utils/MemoryMgr.h"
 #include "Utils/Patterns.h"
 
+#include <functional>
 #include <vector>
 
 bool* m_isWindowActive;
@@ -186,6 +187,49 @@ namespace WidescreenFix
 			fmul [verticalFOV]
 			retn
 		}
+	}
+}
+
+namespace DynamicAllocList
+{
+	uint32_t* m_currentAllocSize;
+	void* (__stdcall* orgMaybeAlloc)(uint32_t size, uint8_t flags);
+
+	static void* currentMemSpace; // At first it points at the game variable, then at currentDynamicAlloc
+	static size_t currentAllocCapacity = 1024;
+	static void* currentDynamicAlloc = nullptr;
+	static std::function<void()> rePatchFunc;
+
+	void* __stdcall MaybeAllocAndExpandArray(uint32_t size, uint8_t flags)
+	{
+		const uint32_t curIndexToUse = *m_currentAllocSize;
+		if (curIndexToUse >= currentAllocCapacity)
+		{
+			// If it's the first time we reallocate, it'll redirect from the game variable to a custom allocation
+			const size_t newCapacity = 2 * currentAllocCapacity;
+			void* newMem = realloc(currentDynamicAlloc, sizeof(void*) * newCapacity);
+			if (newMem != nullptr)
+			{
+				if (currentDynamicAlloc == nullptr)
+				{
+					// This is the first time allocating, copy the data over from the game allocation
+					// Further reallocations will implicitly copy the data over
+					void** src = static_cast<void**>(currentMemSpace);
+					void** dest = static_cast<void**>(newMem);
+					std::copy_n(src, currentAllocCapacity, dest);
+				}
+
+				void** mem = static_cast<void**>(newMem);
+				std::fill(mem+currentAllocCapacity, mem+newCapacity, nullptr);
+
+				currentDynamicAlloc = currentMemSpace = newMem;
+				currentAllocCapacity = newCapacity;
+
+				rePatchFunc();
+			}
+		}
+		void* returnMem = orgMaybeAlloc(size, flags);
+		return returnMem;
 	}
 }
 
@@ -370,6 +414,59 @@ void OnInitializeHook()
 	{
 		auto cd_check = get_pattern("F3 A4 E8 ? ? ? ? 85 DB", 9);
 		Nop(cd_check, 10);
+	}
+	TXN_CATCH();
+
+	// Make the (presumably?) allocation list dynamic so it doesn't overflow
+	// Fixes a crash when continuously minimizing and maximizing (+ ~50 allocations per maximize)
+	try
+	{
+		using namespace DynamicAllocList;
+
+		auto alloc_size_var = *get_pattern<uint32_t*>("89 35 ? ? ? ? 89 35 ? ? ? ? A3", 2);
+		auto alloc_function = get_pattern("E8 ? ? ? ? 8B 0D ? ? ? ? 6A 00 50");
+
+		uint32_t* alloc_sizes[] = {
+			get_pattern<uint32_t>("B9 ? ? ? ? 33 C0 BF ? ? ? ? 33 F6 F3 AB B8", 1),
+		};
+		void** allocs_begin[] = {
+			get_pattern<void*>("BF ? ? ? ? 33 F6 F3 AB B8", 1),
+			get_pattern<void*>("BE ? ? ? ? 8B 06 85 C0 74 22", 1),
+
+			get_pattern<void*>("50 89 04 8D", 3 + 1),
+			get_pattern<void*>("89 54 24 68 8B 14 8D", 4 + 3),
+			get_pattern<void*>("8B 04 85 ? ? ? ? 8B 08", 3),
+			get_pattern<void*>("8B 14 8D ? ? ? ? 89 10", 3),
+		};
+		void** allocs_end[] = {
+			get_pattern<void*>("81 FE ? ? ? ? 72 CD", 2),
+		};
+
+		ReadCall(alloc_function, orgMaybeAlloc);
+		InjectHook(alloc_function, MaybeAllocAndExpandArray);
+		m_currentAllocSize = alloc_size_var;
+		currentMemSpace = *allocs_begin[0];
+
+		rePatchFunc = [alloc_sizes, allocs_begin, allocs_end] {
+			std::unique_ptr<ScopedUnprotect::Unprotect> Protect = ScopedUnprotect::UnprotectSectionOrFullModule( GetModuleHandle( nullptr ), ".text" );
+			
+			using namespace DynamicAllocList;
+
+			void** mem = static_cast<void**>(currentMemSpace);
+
+			for (uint32_t* addr : alloc_sizes)
+			{
+				Patch<uint32_t>(addr, currentAllocCapacity);
+			}
+			for (void** addr : allocs_begin)
+			{
+				Patch<void**>(addr, mem);	
+			}
+			for (void** addr : allocs_end)
+			{
+				Patch<void**>(addr, mem+currentAllocCapacity);	
+			}
+		};
 	}
 	TXN_CATCH();
 }
