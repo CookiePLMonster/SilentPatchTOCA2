@@ -260,12 +260,33 @@ namespace DecalsCrashFix
 	}
 }
 
-ATOM WINAPI RegisterClassA_SetIcon(WNDCLASSA* lpWndClass)
+static BOOL* bRequestsExit;
+static LRESULT (CALLBACK* orgWindowProc)(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+	switch (uMsg)
+	{
+	case WM_CLOSE: // The game ignores WM_CLOSE, force it not to
+		return DefWindowProcA(hwnd, uMsg, wParam, lParam);
+
+	case WM_DESTROY:
+		*bRequestsExit = TRUE;
+		PostQuitMessage(0);
+		return 0;
+	
+	default:
+		break;
+	}
+	return orgWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+ATOM WINAPI RegisterClassA_SetIconAndWndProc(WNDCLASSA* lpWndClass)
 {
 	lpWndClass->hIcon = ExtractIconW(GetModuleHandle(nullptr), L"toca2.exe", 0);
+	orgWindowProc = std::exchange(lpWndClass->lpfnWndProc, WindowProc);
 	return RegisterClassA(lpWndClass);
 }
-static auto* const pRegisterClassA_SetIcon = &RegisterClassA_SetIcon;
+static auto* const pRegisterClassA_SetIconAndWndProc = &RegisterClassA_SetIconAndWndProc;
 
 void OnInitializeHook()
 {
@@ -517,10 +538,14 @@ void OnInitializeHook()
 	TXN_CATCH();
 
 	// Take the process icon from toca2.exe
+	// + overriden window proc
 	try
 	{
 		auto register_class = get_pattern("FF 15 ? ? ? ? 66 85 C0", 2);
-		Patch(register_class, &pRegisterClassA_SetIcon);
+		auto requests_exit = *get_pattern<BOOL*>("A1 ? ? ? ? 85 C0 74 83", 1);
+
+		bRequestsExit = requests_exit;
+		Patch(register_class, &pRegisterClassA_SetIconAndWndProc);
 	}
 	TXN_CATCH();
 }
