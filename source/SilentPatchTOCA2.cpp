@@ -3,6 +3,7 @@
 
 #include <windows.h>
 #include <ddraw.h>
+#include <shellapi.h>
 
 #include "Utils/MemoryMgr.h"
 #include "Utils/Patterns.h"
@@ -259,6 +260,13 @@ namespace DecalsCrashFix
 	}
 }
 
+ATOM WINAPI RegisterClassA_SetIcon(WNDCLASSA* lpWndClass)
+{
+	lpWndClass->hIcon = ExtractIconW(GetModuleHandle(nullptr), L"toca2.exe", 0);
+	return RegisterClassA(lpWndClass);
+}
+static auto* const pRegisterClassA_SetIcon = &RegisterClassA_SetIcon;
+
 void OnInitializeHook()
 {
 	std::unique_ptr<ScopedUnprotect::Unprotect> Protect = ScopedUnprotect::UnprotectSectionOrFullModule( GetModuleHandle( nullptr ), ".text" );
@@ -505,6 +513,14 @@ void OnInitializeHook()
 		ReadCall(init_decals, orgInitializeDecals);
 		InjectHook(init_decals, InitializeDecals_IDCheck);
 		gCarsInRaceDetails = cars_in_race_details;
+	}
+	TXN_CATCH();
+
+	// Take the process icon from toca2.exe
+	try
+	{
+		auto register_class = get_pattern("FF 15 ? ? ? ? 66 85 C0", 2);
+		Patch(register_class, &pRegisterClassA_SetIcon);
 	}
 	TXN_CATCH();
 }
