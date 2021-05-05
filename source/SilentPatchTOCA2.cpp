@@ -4,14 +4,18 @@
 #include <windows.h>
 #include <ddraw.h>
 #include <shellapi.h>
+#include <Shlwapi.h>
 
 #include "Utils/MemoryMgr.h"
 #include "Utils/Patterns.h"
 
+#include <algorithm>
 #include <functional>
 #include <vector>
 
 #include <wrl/client.h>
+
+#pragma comment(lib, "Shlwapi.lib")
 
 BOOL UseMetric = TRUE;
 
@@ -170,6 +174,10 @@ namespace WidescreenFix
 		}
 	}
 
+	static double FOVNormalMult = 1.0; // Arbitrary values, shown to the user as 70deg by default
+	static double FOVDashboardMult = 1.0;
+	uint32_t (__stdcall* GetCurrentCamera)(int camID);
+	
 	static float horizontalFOV = 2.0f;
 	static float verticalFOV = 2.5f;
 	void __stdcall SetViewport_CalculateAR(int width, int unk1, int unk2, int unk3, int height, int unk4)
@@ -177,8 +185,13 @@ namespace WidescreenFix
 		// TODO: Adjustable FOV
 		const double currentInvAR = static_cast<double>(m_currentRes->height) / m_currentRes->width;
 
-		constexpr double AR_CONSTANT = 2.0 * 4.0 / 3.0; // 2.0f * (4/3)
-		horizontalFOV = static_cast<float>(AR_CONSTANT * currentInvAR);
+		uint32_t camID = GetCurrentCamera(0);
+		const double FOVMult = camID == 2 || camID == 4 ? FOVDashboardMult : FOVNormalMult;
+
+		constexpr double AR_HOR_CONSTANT = 2.0 * 4.0 / 3.0; // 2.0f * (4/3)
+		constexpr double AR_VERT_CONSTANT = 2.5;
+		horizontalFOV = static_cast<float>(AR_HOR_CONSTANT * FOVMult * currentInvAR);
+		verticalFOV = static_cast<float>(AR_VERT_CONSTANT * FOVMult);
 
 		SetViewport_Thunk(width, unk1, unk2, unk3, height, unk4);
 	}
@@ -315,6 +328,35 @@ namespace DecalsCrashFix
 	}
 }
 
+static HMODULE hDLLModule;
+static void ReadINI()
+{
+	wchar_t buffer[32];
+	wchar_t wcModulePath[MAX_PATH];
+	GetModuleFileNameW(hDLLModule, wcModulePath, _countof(wcModulePath) - 3); // Minus max required space for extension
+	PathRenameExtensionW(wcModulePath, L".ini");
+
+	auto convFOV = [](const wchar_t* buf) -> double {
+		double userFOV = std::clamp(_wtof(buf), 30.0, 150.0);
+		// Mappings:
+		// 30 - 2.0f
+		// 70 - 1.0f
+		// 150 - 0.4f
+		if (userFOV <= 70.0)
+		{
+			return 2.75 - (userFOV / 40.0);
+		}
+		return 1.525 - (0.0075 * userFOV);
+	};
+
+	GetPrivateProfileString(L"SilentPatch", L"ExteriorFOV", L"70.0", buffer, _countof(buffer), wcModulePath);
+	WidescreenFix::FOVNormalMult = convFOV(buffer);
+
+	GetPrivateProfileString(L"SilentPatch", L"InteriorFOV", L"70.0", buffer, _countof(buffer), wcModulePath);
+	WidescreenFix::FOVDashboardMult = convFOV(buffer);
+	
+}
+
 static BOOL* bRequestsExit;
 static LRESULT (CALLBACK* orgWindowProc)(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -329,6 +371,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		PostQuitMessage(0);
 		return 0;
 	
+	case WM_ACTIVATE:
+		if (wParam != WA_INACTIVE)
+		{
+			ReadINI();
+		}
+		break;
+
 	default:
 		break;
 	}
@@ -356,6 +405,8 @@ namespace ForcedMirrors
 
 void OnInitializeHook()
 {
+	ReadINI();
+
 	std::unique_ptr<ScopedUnprotect::Unprotect> Protect = ScopedUnprotect::UnprotectSectionOrFullModule( GetModuleHandle( nullptr ), ".text" );
 
 	using namespace Memory;
@@ -419,11 +470,13 @@ void OnInitializeHook()
 
 		auto set_viewport = pattern("DB 44 24 08 DB 44 24 0C D9 C2").get_one();
 		auto calculate_fov = pattern("D8 74 24 00 D9 44 24 0C").get_one();
+		auto get_current_camera_ptr = get_pattern("E8 ? ? ? ? 83 F8 04 75 1A");
 
 		SetViewport_ThunkEnd = set_viewport.get<void>();
 		InjectHook(set_viewport.get<void>(-5), SetViewport_CalculateAR, PATCH_JUMP);
 
 		// Adjustable FOV
+		ReadCall(get_current_camera_ptr, GetCurrentCamera);
 		InjectHook(calculate_fov.get<void>(10), MultByFOV, PATCH_CALL);
 		Nop(calculate_fov.get<void>(10 + 5), 5);
 	}
@@ -705,4 +758,15 @@ void OnInitializeHook()
 		}
 	}
 	TXN_CATCH();
+}
+
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+{
+	UNREFERENCED_PARAMETER(lpvReserved);
+
+	if (fdwReason == DLL_PROCESS_ATTACH)
+	{
+		hDLLModule = hinstDLL;
+	}
+	return TRUE;
 }
