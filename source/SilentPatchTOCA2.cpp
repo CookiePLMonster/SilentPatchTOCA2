@@ -11,6 +11,8 @@
 #include <functional>
 #include <vector>
 
+#include <wrl/client.h>
+
 bool* m_isWindowActive;
 namespace Timers
 {
@@ -231,6 +233,48 @@ namespace DynamicAllocList
 		}
 		void* returnMem = orgMaybeAlloc(size, flags);
 		return returnMem;
+	}
+}
+
+LPDIRECTDRAW* g_pDirectDraw;
+void (__stdcall* RegisterDestructor)(BOOL (__stdcall* func)(), const char* name);
+namespace DynamicPalettesList
+{
+	using Microsoft::WRL::ComPtr;
+
+	std::vector<ComPtr<IDirectDrawPalette>> createdPalettes;
+
+	BOOL __stdcall PalettesDestructor()
+	{
+		createdPalettes.clear();
+		return TRUE;
+	}
+
+	LPDIRECTDRAWPALETTE __stdcall CreateD3DPalette(PALETTEENTRY* entry)
+	{
+		const bool emptyContainer = createdPalettes.empty();
+		if (emptyContainer)
+		{
+			createdPalettes.reserve(1024);
+		}
+
+		ComPtr<IDirectDrawPalette> palette;
+		if (entry != nullptr)
+		{
+			(*g_pDirectDraw)->CreatePalette(DDPCAPS_8BIT|DDPCAPS_ALLOW256, entry, palette.GetAddressOf(), nullptr);
+		}
+		else
+		{
+			PALETTEENTRY dummyPalette;
+			(*g_pDirectDraw)->CreatePalette(DDPCAPS_8BIT|DDPCAPS_ALLOW256, &dummyPalette, palette.GetAddressOf(), nullptr);
+		}
+		createdPalettes.push_back(palette);
+
+		if (emptyContainer)
+		{
+			RegisterDestructor(PalettesDestructor, nullptr);
+		}
+		return palette.Get();
 	}
 }
 
@@ -519,6 +563,24 @@ void OnInitializeHook()
 				Patch<void**>(addr, mem+currentAllocCapacity);	
 			}
 		};
+	}
+	TXN_CATCH();
+
+	// Lift the 1024 palettes limit
+	// Fixes a crash when minimizing excessively
+	try
+	{
+		using namespace DynamicPalettesList;
+
+		auto direct_draw_ptr = *get_pattern<LPDIRECTDRAW*>("A1 ? ? ? ? 33 FF 57", 1);
+		auto register_destructor_func = static_cast<decltype(RegisterDestructor)>(get_pattern("3B 31 74 24", -0x21));
+
+		auto create_palette_func = get_pattern("3D ? ? ? ? 73 6C", -0xB);
+
+		g_pDirectDraw = direct_draw_ptr;
+		RegisterDestructor = register_destructor_func;
+
+		InjectHook(create_palette_func, CreateD3DPalette, PATCH_JUMP);
 	}
 	TXN_CATCH();
 
