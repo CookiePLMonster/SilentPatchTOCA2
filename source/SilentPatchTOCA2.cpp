@@ -345,8 +345,13 @@ static auto* const pRegisterClassA_SetIconAndWndProc = &RegisterClassA_SetIconAn
 
 namespace MetricSwitch
 {
-	static void* fakeGamePtrForMetric = reinterpret_cast<char*>(&UseMetric) - 0x1D00;
+	static void* const fakeGamePtrForMetric = reinterpret_cast<char*>(&UseMetric) - 0x1D00;
+}
 
+namespace ForcedMirrors
+{
+	static const BOOL ForcedMirror = TRUE;
+	static void* const fakeGamePtrForMirror = reinterpret_cast<char*>(&UseMetric) - 0x1CD0;
 }
 
 void OnInitializeHook()
@@ -653,6 +658,51 @@ void OnInitializeHook()
 		prepare_ui_data.for_each_result([](hook::pattern_match match) {
 			Patch(match.get<void>(1), &fakeGamePtrForMetric);	
 		});
+	}
+	TXN_CATCH();
+
+	// Forced in-car rear view mirrors
+	try
+	{
+		using namespace ForcedMirrors;
+
+		void* addresses[] = {
+			get_pattern("8B 46 04 8B 15", 3 + 2),
+			get_pattern("8B 15 ? ? ? ? 8A 8A", 2),
+		};
+
+		void* short_jmps[] = {
+			get_pattern("8B 14 AD ? ? ? ? 85 D2", -2),
+		};
+
+		const std::pair<void*, size_t> nops[] = {
+			{ get_pattern("8B 04 AD ? ? ? ? 85 C0", -2), 2 },
+			{ get_pattern("A1 ? ? ? ? 3B F3", -0x28), 6 }, // Unknown
+			{ get_pattern("0F BE BE ? ? ? ? 38 9A", 7 + 6), 6 },
+			{ get_pattern("0F 84 ? ? ? ? 3A CB", 6 + 2), 6 },
+		};
+
+		auto mov_dl_1_nop = pattern("33 C9 84 D2 5F").get_one();
+
+		// mov dl, 1
+		// nop
+		Patch(mov_dl_1_nop.get<void>(-6), { 0xB2, 0x01 });
+		Nop(mov_dl_1_nop.get<void>(-4), 4);
+
+		for (void* addr : addresses)
+		{
+			Patch(addr, &fakeGamePtrForMirror);
+		}
+
+		for (void* addr : short_jmps)
+		{
+			Patch<uint8_t>(addr, 0xEB);
+		}
+
+		for (auto& addr : nops)
+		{
+			Nop(addr.first, addr.second);
+		}
 	}
 	TXN_CATCH();
 }
