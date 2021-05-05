@@ -13,6 +13,8 @@
 
 #include <wrl/client.h>
 
+BOOL UseMetric = TRUE;
+
 bool* m_isWindowActive;
 namespace Timers
 {
@@ -341,6 +343,12 @@ ATOM WINAPI RegisterClassA_SetIconAndWndProc(WNDCLASSA* lpWndClass)
 }
 static auto* const pRegisterClassA_SetIconAndWndProc = &RegisterClassA_SetIconAndWndProc;
 
+namespace MetricSwitch
+{
+	static void* fakeGamePtrForMetric = reinterpret_cast<char*>(&UseMetric) - 0x1D00;
+
+}
+
 void OnInitializeHook()
 {
 	std::unique_ptr<ScopedUnprotect::Unprotect> Protect = ScopedUnprotect::UnprotectSectionOrFullModule( GetModuleHandle( nullptr ), ".text" );
@@ -620,6 +628,31 @@ void OnInitializeHook()
 
 		bRequestsExit = requests_exit;
 		Patch(register_class, &pRegisterClassA_SetIconAndWndProc);
+	}
+	TXN_CATCH();
+
+	// Metric/imperial switch
+	try
+	{
+		using namespace MetricSwitch;
+
+		void* addresses[] = {
+			get_pattern("A1 ? ? ? ? 8B 88 00 1D 00 00 B8", 1), // Distance unit string
+			get_pattern("8B EC A1 ? ? ? ? 8B 90", 2 + 1), // Distance unit conversion
+			get_pattern("83 EC 08 A1 ? ? ? ? 53 56", 3 + 1),
+			get_pattern("89 43 EC A1", 3 + 1),
+		};
+
+		auto prepare_ui_data = pattern("A1 ? ? ? ? 8B 88 00 1D 00 00 85 C9 75 1C A1").count(2);
+
+		for (void* addr : addresses)
+		{
+			Patch(addr, &fakeGamePtrForMetric);
+		}
+
+		prepare_ui_data.for_each_result([](hook::pattern_match match) {
+			Patch(match.get<void>(1), &fakeGamePtrForMetric);	
+		});
 	}
 	TXN_CATCH();
 }
