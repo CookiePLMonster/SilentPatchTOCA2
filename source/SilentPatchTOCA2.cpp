@@ -297,9 +297,18 @@ namespace DecalsCrashFix
 	void __stdcall InitializeDecals_IDCheck()
 	{
 		const CarDetails* details = *gCarsInRaceDetails;
-		if (details[0].m_carID < 8)
+		if (details != nullptr && details[0].m_carID < 8)
 		{
 			orgInitializeDecals();
+		}
+	}
+
+	static void (__stdcall* orgSkinsLoad)();
+	void __stdcall SkinsLoad_NullCheck()
+	{
+		if ((*gCarsInRaceDetails) != nullptr)
+		{
+			orgSkinsLoad();
 		}
 	}
 }
@@ -590,11 +599,14 @@ void OnInitializeHook()
 	{
 		using namespace DecalsCrashFix;
 
-		auto init_decals = get_pattern("E8 ? ? ? ? E8 ? ? ? ? 85 C0 74 05 E8 ? ? ? ? E8 ? ? ? ? B8");
+		auto init_decals = pattern("E8 ? ? ? ? E8 ? ? ? ? 85 C0 74 05 E8 ? ? ? ? E8 ? ? ? ? B8").get_one();
 		auto cars_in_race_details = *get_pattern<CarDetails**>("8B 0D ? ? ? ? 8A 44 01 10", 2);
 
-		ReadCall(init_decals, orgInitializeDecals);
-		InjectHook(init_decals, InitializeDecals_IDCheck);
+		ReadCall(init_decals.get<void>(-5), orgSkinsLoad);
+		InjectHook(init_decals.get<void>(-5), SkinsLoad_NullCheck);
+
+		ReadCall(init_decals.get<void>(0), orgInitializeDecals);
+		InjectHook(init_decals.get<void>(0), InitializeDecals_IDCheck);
 		gCarsInRaceDetails = cars_in_race_details;
 	}
 	TXN_CATCH();
