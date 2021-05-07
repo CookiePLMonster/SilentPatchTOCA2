@@ -19,6 +19,65 @@
 
 BOOL UseMetric = TRUE;
 
+bool ShowSteeringWheel = true;
+bool ShowArms = true;
+
+struct ModelEntity
+{
+	std::byte gap[260];
+	uint16_t m_flags;
+};
+static_assert(offsetof(ModelEntity, m_flags) == 0x104);
+
+void ModelEntitySetFlags(ModelEntity* obj, BOOL set, uint16_t flags)
+{
+	if (set != FALSE)
+	{
+		obj->m_flags |= flags;
+	}
+	else
+	{
+		obj->m_flags &= ~flags;
+	}
+}
+
+struct ArmsStruct
+{
+	int m_currentID;
+	int16_t m_armsAngle;
+	struct {
+		int field_0;
+		int field_4;
+		int field_8;
+		int field_C;
+		int field_10;
+		int field_14;
+		int16_t field_18;
+		int16_t field_1A;
+		int16_t field_1C;
+		int field_20;
+		ModelEntity *model104;
+		ModelEntity *model105;
+		ModelEntity *model102;
+		ModelEntity *model103;
+		ModelEntity *model106;
+		ModelEntity *model107;
+		ModelEntity *leftArm;
+		ModelEntity *rightArm;
+		ModelEntity *model112;
+		ModelEntity *model113;
+		ModelEntity *steeringWheel;
+		ModelEntity* dashboard;
+		ModelEntity* model605;
+		ModelEntity* gearKnob;
+		ModelEntity *model110;
+		int field_60;
+		int field_64;
+	} m_arm[4];
+};
+
+ArmsStruct* gArms;
+
 bool* m_isWindowActive;
 namespace Timers
 {
@@ -354,7 +413,9 @@ static void ReadINI()
 
 	GetPrivateProfileString(L"SilentPatch", L"InteriorFOV", L"70.0", buffer, _countof(buffer), wcModulePath);
 	WidescreenFix::FOVDashboardMult = convFOV(buffer);
-	
+
+	ShowSteeringWheel = GetPrivateProfileInt(L"SilentPatch", L"ShowSteeringWheel", TRUE, wcModulePath) != FALSE;
+	ShowArms = GetPrivateProfileInt(L"SilentPatch", L"ShowArms", TRUE, wcModulePath) != FALSE;
 }
 
 static BOOL* bRequestsExit;
@@ -401,6 +462,48 @@ namespace ForcedMirrors
 {
 	static const BOOL ForcedMirror = TRUE;
 	static void* const fakeGamePtrForMirror = reinterpret_cast<char*>(&UseMetric) - 0x1CD0;
+}
+
+namespace FullRangeSteeringAnim
+{
+	int (__stdcall* orgGetCurrentCamera)(int arg1);
+	int __stdcall GetCurrentCamera_FakeInteriorCam(int arg1)
+	{
+		int result = orgGetCurrentCamera(arg1);
+		return result == 2 || result == 4 ? 2 : result;
+	}
+}
+
+namespace WheelArmsToggle
+{
+	void (__stdcall* RotatePart)(ModelEntity* entity, void* data);
+	void __stdcall RotatePart_HideWheel(ModelEntity* entity, void* data)
+	{
+		ModelEntitySetFlags(entity, ShowSteeringWheel, 0xFFFF);
+		if (ModelEntity* gearKnob = gArms->m_arm[gArms->m_currentID].gearKnob; gearKnob != nullptr)
+		{
+			ModelEntitySetFlags(gearKnob, ShowSteeringWheel, 0xFFFF);
+		}
+		if (ShowSteeringWheel)
+		{
+			RotatePart(entity, data);
+		}
+	}
+
+	int (__stdcall* orgGetCurrentCamera)(int index);
+	int __stdcall GetCurrentCamera_ToggleArms(int index)
+	{
+		const bool showArms = ShowArms && ShowSteeringWheel;
+		if (ModelEntity* leftArm = gArms->m_arm[gArms->m_currentID].leftArm; leftArm != nullptr)
+		{
+			ModelEntitySetFlags(leftArm, showArms, 0xFFFF);
+		}
+		if (ModelEntity* rightArm = gArms->m_arm[gArms->m_currentID].rightArm; rightArm != nullptr)
+		{
+			ModelEntitySetFlags(rightArm, showArms, 0xFFFF);
+		}
+		return orgGetCurrentCamera(index);
+	}
 }
 
 void OnInitializeHook()
@@ -756,6 +859,41 @@ void OnInitializeHook()
 		{
 			Nop(addr.first, addr.second);
 		}
+	}
+	TXN_CATCH();
+
+	// Full range steering & gear shifting anim
+	// when using the center interior cam
+	try
+	{
+		using namespace FullRangeSteeringAnim;
+
+		auto arms_animate = get_pattern("E8 ? ? ? ? 83 F8 02 75 60");
+		auto dashboard_update = get_pattern("E8 ? ? ? ? 83 F8 04 75 26");
+
+		ReadCall(arms_animate, orgGetCurrentCamera);
+		InjectHook(arms_animate, GetCurrentCamera_FakeInteriorCam);
+		InjectHook(dashboard_update, GetCurrentCamera_FakeInteriorCam);
+	}
+	TXN_CATCH();
+
+	// Options to hide the steering wheel and arms
+	try
+	{
+		using namespace WheelArmsToggle;
+
+		auto rotate_wheel = get_pattern("66 89 3D ? ? ? ? E8", 7);
+		auto animate_arms_get_cam = get_pattern("E8 ? ? ? ? 83 F8 02 75 60");
+
+		auto arms = *get_pattern<ArmsStruct*>("8B 0D ? ? ? ? 6A 69", 2);
+
+		gArms = arms;
+
+		ReadCall(rotate_wheel, RotatePart);
+		InjectHook(rotate_wheel, RotatePart_HideWheel);
+
+		ReadCall(animate_arms_get_cam, orgGetCurrentCamera);
+		InjectHook(animate_arms_get_cam, GetCurrentCamera_ToggleArms);
 	}
 	TXN_CATCH();
 }
