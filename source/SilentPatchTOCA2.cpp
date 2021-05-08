@@ -22,6 +22,7 @@ BOOL UseMetric = TRUE;
 
 bool ShowSteeringWheel = true;
 bool ShowArms = true;
+bool FullRangeSteeringAnims = false;
 uint16_t InCarMirrorRes = 64;
 
 struct ModelEntity
@@ -390,7 +391,7 @@ namespace DecalsCrashFix
 }
 
 static HMODULE hDLLModule;
-static void ReadINI(uint16_t* pMirror)
+static void ReadINI(uint16_t* pMirror, bool* pHookMetricImperial, bool* pForcedMirrors)
 {
 	wchar_t buffer[32];
 	wchar_t wcModulePath[MAX_PATH];
@@ -410,6 +411,12 @@ static void ReadINI(uint16_t* pMirror)
 		return 1.525 - (0.0075 * userFOV);
 	};
 
+	GetPrivateProfileString(L"SilentPatch", L"HUDScale", L"1.0", buffer, _countof(buffer), wcModulePath);
+	HUDScale = _wtof(buffer) / 480.0;
+
+	GetPrivateProfileString(L"SilentPatch", L"MenuTextsScale", L"1.0", buffer, _countof(buffer), wcModulePath);
+	GameMenuScale = _wtof(buffer) / 480.0;
+
 	GetPrivateProfileString(L"SilentPatch", L"ExteriorFOV", L"70.0", buffer, _countof(buffer), wcModulePath);
 	WidescreenFix::FOVNormalMult = convFOV(buffer);
 
@@ -418,6 +425,7 @@ static void ReadINI(uint16_t* pMirror)
 
 	ShowSteeringWheel = GetPrivateProfileInt(L"SilentPatch", L"ShowSteeringWheel", TRUE, wcModulePath) != FALSE;
 	ShowArms = GetPrivateProfileInt(L"SilentPatch", L"ShowArms", TRUE, wcModulePath) != FALSE;
+	FullRangeSteeringAnims = GetPrivateProfileInt(L"SilentPatch", L"FullRangeSteeringAnims", FALSE, wcModulePath) != FALSE;
 
 	if (pMirror)
 	{
@@ -427,6 +435,30 @@ static void ReadINI(uint16_t* pMirror)
 		res = 1 << static_cast<uint32_t>(std::floor(std::log2(res)));
 	
 		*pMirror = static_cast<uint16_t>(res);
+	}
+
+	{
+		UINT units = GetPrivateProfileInt(L"SilentPatch", L"MeasurementUnits", -1, wcModulePath);
+		if (pHookMetricImperial)
+		{
+			*pHookMetricImperial = units != -1;
+		}
+		if (units == 0)
+		{
+			// OS setting
+			DWORD value;
+			GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_IMEASURE|LOCALE_RETURN_NUMBER, (LPTSTR)&value, sizeof(value) / sizeof(WCHAR));
+			UseMetric = value == 0;
+		}
+		else
+		{
+			UseMetric = units == 1;
+		}
+	}
+
+	if (pForcedMirrors)
+	{
+		*pForcedMirrors = GetPrivateProfileInt(L"SilentPatch", L"ForceInteriorMirrors", -1, wcModulePath) != FALSE;
 	}
 }
 
@@ -447,7 +479,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case WM_ACTIVATE:
 		if (wParam != WA_INACTIVE)
 		{
-			ReadINI(nullptr);
+			ReadINI(nullptr, nullptr, nullptr);
 		}
 		break;
 
@@ -482,7 +514,7 @@ namespace FullRangeSteeringAnim
 	int __stdcall GetCurrentCamera_FakeInteriorCam(int arg1)
 	{
 		int result = orgGetCurrentCamera(arg1);
-		return result == 2 || result == 4 ? 2 : result;
+		return (FullRangeSteeringAnims && (result == 2 || result == 4)) ? 2 : result;
 	}
 }
 
@@ -536,7 +568,8 @@ namespace MirrorQuality
 
 void OnInitializeHook()
 {
-	ReadINI(&InCarMirrorRes);
+	bool hookUnits = false, forcedMirrors = false;
+	ReadINI(&InCarMirrorRes, &hookUnits, &forcedMirrors);
 
 	std::unique_ptr<ScopedUnprotect::Unprotect> Protect = ScopedUnprotect::UnprotectSectionOrFullModule( GetModuleHandle( nullptr ), ".text" );
 
@@ -821,74 +854,80 @@ void OnInitializeHook()
 	TXN_CATCH();
 
 	// Metric/imperial switch
-	try
+	if (hookUnits)
 	{
-		using namespace MetricSwitch;
-
-		void* addresses[] = {
-			get_pattern("A1 ? ? ? ? 8B 88 00 1D 00 00 B8", 1), // Distance unit string
-			get_pattern("8B EC A1 ? ? ? ? 8B 90", 2 + 1), // Distance unit conversion
-			get_pattern("83 EC 08 A1 ? ? ? ? 53 56", 3 + 1),
-			get_pattern("89 43 EC A1", 3 + 1),
-		};
-
-		auto prepare_ui_data = pattern("A1 ? ? ? ? 8B 88 00 1D 00 00 85 C9 75 1C A1").count(2);
-
-		for (void* addr : addresses)
+		try
 		{
-			Patch(addr, &fakeGamePtrForMetric);
-		}
+			using namespace MetricSwitch;
 
-		prepare_ui_data.for_each_result([](hook::pattern_match match) {
-			Patch(match.get<void>(1), &fakeGamePtrForMetric);	
-		});
+			void* addresses[] = {
+				get_pattern("A1 ? ? ? ? 8B 88 00 1D 00 00 B8", 1), // Distance unit string
+				get_pattern("8B EC A1 ? ? ? ? 8B 90", 2 + 1), // Distance unit conversion
+				get_pattern("83 EC 08 A1 ? ? ? ? 53 56", 3 + 1),
+				get_pattern("89 43 EC A1", 3 + 1),
+			};
+
+			auto prepare_ui_data = pattern("A1 ? ? ? ? 8B 88 00 1D 00 00 85 C9 75 1C A1").count(2);
+
+			for (void* addr : addresses)
+			{
+				Patch(addr, &fakeGamePtrForMetric);
+			}
+
+			prepare_ui_data.for_each_result([](hook::pattern_match match) {
+				Patch(match.get<void>(1), &fakeGamePtrForMetric);	
+			});
+		}
+		TXN_CATCH();
 	}
-	TXN_CATCH();
 
 	// Forced in-car rear view mirrors
-	try
+	if (forcedMirrors)
 	{
-		using namespace ForcedMirrors;
-
-		void* addresses[] = {
-			get_pattern("8B 46 04 8B 15", 3 + 2),
-			get_pattern("8B 15 ? ? ? ? 8A 8A", 2),
-		};
-
-		void* short_jmps[] = {
-			get_pattern("8B 14 AD ? ? ? ? 85 D2", -2),
-		};
-
-		const std::pair<void*, size_t> nops[] = {
-			{ get_pattern("8B 04 AD ? ? ? ? 85 C0", -2), 2 },
-			{ get_pattern("A1 ? ? ? ? 3B F3", -0x28), 6 }, // Unknown
-			{ get_pattern("0F BE BE ? ? ? ? 38 9A", 7 + 6), 6 },
-			{ get_pattern("0F 84 ? ? ? ? 3A CB", 6 + 2), 6 },
-		};
-
-		auto mov_dl_1_nop = pattern("33 C9 84 D2 5F").get_one();
-
-		// mov dl, 1
-		// nop
-		Patch(mov_dl_1_nop.get<void>(-6), { 0xB2, 0x01 });
-		Nop(mov_dl_1_nop.get<void>(-4), 4);
-
-		for (void* addr : addresses)
+		try
 		{
-			Patch(addr, &fakeGamePtrForMirror);
-		}
+			using namespace ForcedMirrors;
 
-		for (void* addr : short_jmps)
-		{
-			Patch<uint8_t>(addr, 0xEB);
-		}
+			void* addresses[] = {
+				get_pattern("8B 46 04 8B 15", 3 + 2),
+				get_pattern("8B 15 ? ? ? ? 8A 8A", 2),
+			};
 
-		for (auto& addr : nops)
-		{
-			Nop(addr.first, addr.second);
+			void* short_jmps[] = {
+				get_pattern("8B 14 AD ? ? ? ? 85 D2", -2),
+			};
+
+			const std::pair<void*, size_t> nops[] = {
+				{ get_pattern("8B 04 AD ? ? ? ? 85 C0", -2), 2 },
+				{ get_pattern("A1 ? ? ? ? 3B F3", -0x28), 6 }, // Unknown
+				{ get_pattern("0F BE BE ? ? ? ? 38 9A", 7 + 6), 6 },
+				{ get_pattern("0F 84 ? ? ? ? 3A CB", 6 + 2), 6 },
+			};
+
+			auto mov_dl_1_nop = pattern("33 C9 84 D2 5F").get_one();
+
+			// mov dl, 1
+			// nop
+			Patch(mov_dl_1_nop.get<void>(-6), { 0xB2, 0x01 });
+			Nop(mov_dl_1_nop.get<void>(-4), 4);
+
+			for (void* addr : addresses)
+			{
+				Patch(addr, &fakeGamePtrForMirror);
+			}
+
+			for (void* addr : short_jmps)
+			{
+				Patch<uint8_t>(addr, 0xEB);
+			}
+
+			for (auto& addr : nops)
+			{
+				Nop(addr.first, addr.second);
+			}
 		}
+		TXN_CATCH();
 	}
-	TXN_CATCH();
 
 	// Full range steering & gear shifting anim
 	// when using the center interior cam
