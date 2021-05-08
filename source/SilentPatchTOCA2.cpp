@@ -10,6 +10,7 @@
 #include "Utils/Patterns.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <vector>
 
@@ -21,6 +22,7 @@ BOOL UseMetric = TRUE;
 
 bool ShowSteeringWheel = true;
 bool ShowArms = true;
+uint16_t InCarMirrorRes = 64;
 
 struct ModelEntity
 {
@@ -388,7 +390,7 @@ namespace DecalsCrashFix
 }
 
 static HMODULE hDLLModule;
-static void ReadINI()
+static void ReadINI(uint16_t* pMirror)
 {
 	wchar_t buffer[32];
 	wchar_t wcModulePath[MAX_PATH];
@@ -416,6 +418,16 @@ static void ReadINI()
 
 	ShowSteeringWheel = GetPrivateProfileInt(L"SilentPatch", L"ShowSteeringWheel", TRUE, wcModulePath) != FALSE;
 	ShowArms = GetPrivateProfileInt(L"SilentPatch", L"ShowArms", TRUE, wcModulePath) != FALSE;
+
+	if (pMirror)
+	{
+		UINT res = GetPrivateProfileInt(L"SilentPatch", L"MirrorResolution", 64, wcModulePath);
+		// Must be in 64 - 512 ranges and a power of two
+		res = std::clamp(res, 64u, 512u);
+		res = 1 << static_cast<uint32_t>(std::floor(std::log2(res)));
+	
+		*pMirror = static_cast<uint16_t>(res);
+	}
 }
 
 static BOOL* bRequestsExit;
@@ -435,7 +447,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case WM_ACTIVATE:
 		if (wParam != WA_INACTIVE)
 		{
-			ReadINI();
+			ReadINI(nullptr);
 		}
 		break;
 
@@ -506,9 +518,25 @@ namespace WheelArmsToggle
 	}
 }
 
+namespace MirrorQuality
+{
+	void (__stdcall* orgCreateViewport)(void* data, uint32_t x, uint32_t y, uint32_t width, uint32_t height, float multX, float multY);
+	void __stdcall CreateViewport_InCarMirrorScale(void* data, uint32_t x, uint32_t y, uint32_t /*width*/, uint32_t /*height*/, float multX, float multY)
+	{
+		orgCreateViewport(data, x, y, InCarMirrorRes, InCarMirrorRes / 2, multX, multY);
+	}
+
+	void (__stdcall* orgSetViewportBounds)(void* data, const uint16_t rect1[4], const uint16_t rect2[4]);
+	void __stdcall SetViewportBounds_InCarMirror(void* data, const uint16_t* /*rect1*/, const uint16_t* /*rect2*/)
+	{
+		const uint16_t rect[] = { 0, 0, InCarMirrorRes, static_cast<uint16_t>(InCarMirrorRes / 2) };
+		orgSetViewportBounds(data, rect, rect);
+	}
+}
+
 void OnInitializeHook()
 {
-	ReadINI();
+	ReadINI(&InCarMirrorRes);
 
 	std::unique_ptr<ScopedUnprotect::Unprotect> Protect = ScopedUnprotect::UnprotectSectionOrFullModule( GetModuleHandle( nullptr ), ".text" );
 
@@ -894,6 +922,32 @@ void OnInitializeHook()
 
 		ReadCall(animate_arms_get_cam, orgGetCurrentCamera);
 		InjectHook(animate_arms_get_cam, GetCurrentCamera_ToggleArms);
+	}
+	TXN_CATCH();
+
+	// Mirror quality setting for the in-car mirror
+	// Default size is 64x32
+	try
+	{
+		using namespace MirrorQuality;
+
+		auto create_mirror_rt = get_pattern("E8 ? ? ? ? 8B C3 68");
+		auto set_mirror_bounds = get_pattern("8D 54 24 1C 8D 44 24 24 52 50 51 E8", 11);
+
+		auto d3d_resources_ptr = *get_pattern<void*>("68 ? ? ? ? E8 ? ? ? ? 8D 54 24 14", 1);
+
+		ReadCall(create_mirror_rt, orgCreateViewport);
+		InjectHook(create_mirror_rt, CreateViewport_InCarMirrorScale);
+
+		ReadCall(set_mirror_bounds, orgSetViewportBounds);
+		InjectHook(set_mirror_bounds, SetViewportBounds_InCarMirror);
+
+		static constexpr size_t MIRROR_SURFACE_ID = 332;
+
+		void* entriesInfoPtr = *reinterpret_cast<void**>(static_cast<char*>(d3d_resources_ptr) + 16);
+		void* mirrorEntry = static_cast<char*>(entriesInfoPtr) + 1132*MIRROR_SURFACE_ID;
+		uint16_t* size = reinterpret_cast<uint16_t*>(static_cast<char*>(mirrorEntry) + 4);
+		*size = InCarMirrorRes;
 	}
 	TXN_CATCH();
 }
