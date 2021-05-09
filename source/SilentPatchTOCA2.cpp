@@ -499,13 +499,13 @@ static auto* const pRegisterClassA_SetIconAndWndProc = &RegisterClassA_SetIconAn
 
 namespace MetricSwitch
 {
-	static void* const fakeGamePtrForMetric = reinterpret_cast<char*>(&UseMetric) - 0x1D00;
+	static void* fakeGamePtrForMetric;
 }
 
 namespace ForcedMirrors
 {
-	static const BOOL ForcedMirror = TRUE;
-	static void* const fakeGamePtrForMirror = reinterpret_cast<char*>(&UseMetric) - 0x1CD0;
+	static BOOL ForcedMirror = TRUE;
+	static void* fakeGamePtrForMirror;
 }
 
 namespace FullRangeSteeringAnim
@@ -671,20 +671,17 @@ void OnInitializeHook()
 			get_pattern("DC 0D ? ? ? ? 8B 4C 24 18", 2),
 			get_pattern("DC 0D ? ? ? ? D9 1D ? ? ? ? E8 ? ? ? ? 89 35", 2),
 		};
-		void* cmp_1000[] = {
-			get_pattern("BF ? ? ? ? C6 45 FC FF", 1),
-			get_pattern("BF ? ? ? ? 39 3D ? ? ? ? 76 0F", 1),
-		};
+		auto cmp_100 = pattern("BF E8 03 00 00").count(2);
 
 		Patch(ctor_res_scale_x, *ctor_res_scale_y);
 		for (void* addr : scale_values)
 		{
 			Patch(addr, &GameMenuScale);
 		}
-		for (void* addr : cmp_1000)
+		cmp_100.for_each_result([](hook::pattern_match match)
 		{
-			Patch<uint32_t>(addr, 640);
-		}
+			Patch<uint32_t>(match.get<void>(1), 640);
+		});
 	}
 	TXN_CATCH();
 
@@ -734,13 +731,18 @@ void OnInitializeHook()
 	// Fixed and customizable post-race screen scale
 	try
 	{
-		auto cmp_1000_x = pattern("89 5C 24 6C BE ? ? ? ? 0F 85 2B 02 00 00 A1").get_one();
+		auto res_x_check = pattern("A1 ? ? ? ? 3D 00 04 00 00 76 1A").get_one();
+		auto res_y_check = pattern("A1 ? ? ? ? 3D 00 03 00 00 76 1A").get_one();
+		auto scales = pattern("DF 6C 24 18 DC 0D ? ? ? ? D9 1D ? ? ? ? EB 2B").count(2);
 
-		Patch(cmp_1000_x.get<int*>(0xF + 1), *cmp_1000_x.get<int*>(0x60 + 1)); // Res scale X -> Res scale Y
-		Nop(cmp_1000_x.get<void>(0x19), 2); // Scale X unconditionally
-		Nop(cmp_1000_x.get<void>(0x6A), 2); // Scale Y unconditionally
-		Patch(cmp_1000_x.get<void>(0x27 + 2), &GameMenuScale);
-		Patch(cmp_1000_x.get<void>(0x78 + 2), &GameMenuScale);
+		Patch(res_x_check.get<int*>(1), *res_y_check.get<int*>(1)); // Res scale X -> Res scale Y
+		Nop(res_x_check.get<void>(5 + 5), 2); // Scale X unconditionally
+		Nop(res_y_check.get<void>(5 + 5), 2); // Scale Y unconditionally
+
+		scales.for_each_result([](hook::pattern_match match)
+		{
+			Patch(match.get<void>(4 + 2), &GameMenuScale);
+		});
 	}
 	TXN_CATCH();
 
@@ -861,20 +863,28 @@ void OnInitializeHook()
 			using namespace MetricSwitch;
 
 			void* addresses[] = {
-				get_pattern("A1 ? ? ? ? 8B 88 00 1D 00 00 B8", 1), // Distance unit string
 				get_pattern("8B EC A1 ? ? ? ? 8B 90", 2 + 1), // Distance unit conversion
 				get_pattern("83 EC 08 A1 ? ? ? ? 53 56", 3 + 1),
 				get_pattern("89 43 EC A1", 3 + 1),
 			};
 
-			auto prepare_ui_data = pattern("A1 ? ? ? ? 8B 88 00 1D 00 00 85 C9 75 1C A1").count(2);
+			auto get_distance_unit_string = pattern("A1 ? ? ? ? 8B 88 ? ? ? ? B8").get_one();
+			auto prepare_ui_data = pattern("A1 ? ? ? ? 8B 88 ? ? ? ? 85 C9 75 1C A1").count_hint(2); // 2 in 4.1, 1 in 1.0
+			auto prepare_ui_data_10_only = pattern("39 9A ? ? ? ? 75 1C").count_hint(1); // 1.0 only, in 4.1 it shares the above pattern
+
+			fakeGamePtrForMetric = reinterpret_cast<char*>(&UseMetric) - *get_distance_unit_string.get<uint32_t>(5 + 2);
 
 			for (void* addr : addresses)
 			{
 				Patch(addr, &fakeGamePtrForMetric);
 			}
 
+			Patch(get_distance_unit_string.get<void>(1), &fakeGamePtrForMetric);
+
 			prepare_ui_data.for_each_result([](hook::pattern_match match) {
+				Patch(match.get<void>(1), &fakeGamePtrForMetric);	
+			});
+			prepare_ui_data_10_only.for_each_result([](hook::pattern_match match) {
 				Patch(match.get<void>(1), &fakeGamePtrForMetric);	
 			});
 		}
@@ -905,6 +915,9 @@ void OnInitializeHook()
 			};
 
 			auto mov_dl_1_nop = pattern("33 C9 84 D2 5F").get_one();
+
+			uint32_t offset = *get_pattern<uint32_t>("8A 8A ? ? ? ? 84 C9", 2);
+			fakeGamePtrForMirror = reinterpret_cast<char*>(&ForcedMirror) - offset;
 
 			// mov dl, 1
 			// nop
