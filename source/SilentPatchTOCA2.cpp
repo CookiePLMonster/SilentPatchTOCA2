@@ -244,13 +244,12 @@ namespace WidescreenFix
 	static float verticalFOV = 2.5f;
 	void __stdcall SetViewport_CalculateAR(int width, int unk1, int unk2, int unk3, int height, int unk4)
 	{
-		// TODO: Adjustable FOV
 		const double currentInvAR = static_cast<double>(m_currentRes->height) / m_currentRes->width;
 
 		uint32_t camID = GetCurrentCamera(0);
 		const double FOVMult = camID == 2 || camID == 4 ? FOVDashboardMult : FOVNormalMult;
 
-		constexpr double AR_HOR_CONSTANT = 2.0 * 4.0 / 3.0; // 2.0f * (4/3)
+		constexpr double AR_HOR_CONSTANT = 2.0 * 4.0 / 3.0;
 		constexpr double AR_VERT_CONSTANT = 2.5;
 		horizontalFOV = static_cast<float>(AR_HOR_CONSTANT * FOVMult * currentInvAR);
 		verticalFOV = static_cast<float>(AR_VERT_CONSTANT * FOVMult);
