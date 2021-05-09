@@ -974,6 +974,7 @@ void OnInitializeHook()
 		auto set_mirror_bounds = get_pattern("8D 54 24 1C 8D 44 24 24 52 50 51 E8", 11);
 
 		auto d3d_resources_ptr = *get_pattern<void*>("68 ? ? ? ? E8 ? ? ? ? 8D 54 24 14", 1);
+		auto mirror_surface_id = *get_pattern<uint32_t>("68 ? ? ? ? E8 ? ? ? ? A3 ? ? ? ? E8 ? ? ? ? E8 ? ? ? ? E8", 1);
 
 		ReadCall(create_mirror_rt, orgCreateViewport);
 		InjectHook(create_mirror_rt, CreateViewport_InCarMirrorScale);
@@ -981,10 +982,8 @@ void OnInitializeHook()
 		ReadCall(set_mirror_bounds, orgSetViewportBounds);
 		InjectHook(set_mirror_bounds, SetViewportBounds_InCarMirror);
 
-		static constexpr size_t MIRROR_SURFACE_ID = 332;
-
 		void* entriesInfoPtr = *reinterpret_cast<void**>(static_cast<char*>(d3d_resources_ptr) + 16);
-		void* mirrorEntry = static_cast<char*>(entriesInfoPtr) + 1132*MIRROR_SURFACE_ID;
+		void* mirrorEntry = static_cast<char*>(entriesInfoPtr) + 1132*mirror_surface_id;
 		uint16_t* size = reinterpret_cast<uint16_t*>(static_cast<char*>(mirrorEntry) + 4);
 		*size = InCarMirrorRes;
 	}
