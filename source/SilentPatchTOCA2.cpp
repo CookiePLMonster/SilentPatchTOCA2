@@ -368,6 +368,7 @@ namespace DecalsCrashFix
 	static_assert(sizeof(CarDetails) == 88);
 	static_assert(offsetof(CarDetails, m_carID) == 16);
 
+	static void** gUnkDecalResource;
 	static CarDetails** gCarsInRaceDetails;
 	static void (__stdcall* orgInitializeDecals)();
 	void __stdcall InitializeDecals_IDCheck()
@@ -375,7 +376,10 @@ namespace DecalsCrashFix
 		const CarDetails* details = *gCarsInRaceDetails;
 		if (details != nullptr && details[0].m_carID < 8)
 		{
-			orgInitializeDecals();
+			if (gUnkDecalResource[0] != nullptr || gUnkDecalResource[1] != nullptr)
+			{
+				orgInitializeDecals();
+			}
 		}
 	}
 
@@ -826,12 +830,14 @@ void OnInitializeHook()
 
 	// Fix a crash when minimizing during a support car race
 	// Windshield decals attempt to reinitialize when they shouldn't (those cars have no decals)
+	// Also fix a crash when minimizing during loading
 	try
 	{
 		using namespace DecalsCrashFix;
 
 		auto init_decals = pattern("E8 ? ? ? ? E8 ? ? ? ? 85 C0 74 05 E8 ? ? ? ? E8 ? ? ? ? B8").get_one();
 		auto cars_in_race_details = *get_pattern<CarDetails**>("8B 0D ? ? ? ? 8A 44 01 10", 2);
+		auto unk_decal_resource = *get_pattern<void**>("89 0D ? ? ? ? 8B 91", 2);
 
 		ReadCall(init_decals.get<void>(-5), orgSkinsLoad);
 		InjectHook(init_decals.get<void>(-5), SkinsLoad_NullCheck);
@@ -839,6 +845,8 @@ void OnInitializeHook()
 		ReadCall(init_decals.get<void>(0), orgInitializeDecals);
 		InjectHook(init_decals.get<void>(0), InitializeDecals_IDCheck);
 		gCarsInRaceDetails = cars_in_race_details;
+
+		gUnkDecalResource = unk_decal_resource;
 	}
 	TXN_CATCH();
 
