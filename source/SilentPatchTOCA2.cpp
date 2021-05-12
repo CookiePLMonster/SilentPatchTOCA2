@@ -569,6 +569,54 @@ namespace MirrorQuality
 	}
 }
 
+namespace LongerUserNames
+{
+	BOOL __stdcall IsLegalCharForName(char ch)
+	{
+		return (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == ' ' || ch == '.';
+	}
+
+	int (__stdcall *orgGetTypedKey)();
+	int __stdcall GetTypedKey_ConvertToChar()
+	{
+		int vkey = orgGetTypedKey();
+		if (vkey == -1) return vkey;
+
+		return MapVirtualKey(vkey, MAPVK_VK_TO_CHAR) & 0xFFFF;
+	}
+
+	static std::string ExtractLastName(const char* text)
+	{
+		// Trim trailing dots and then substring from the last dot
+		std::string_view view(text);
+		auto suffix = view.find_last_not_of('.');
+		if (suffix != view.npos)
+		{
+			view.remove_suffix(view.size() - (suffix + 1));
+		}
+
+		auto lastNameDot = view.find_last_of('.');
+		if (lastNameDot != view.npos)
+		{
+			view.remove_prefix(lastNameDot + 1);
+		}
+
+		return std::string(view);
+	}
+
+	void (__stdcall* orgInitializeWindshieldDecal)(int ID, const char* text);
+	void __stdcall InitializeWindshieldDecal_SkipDot(int ID, const char* text)
+	{
+		orgInitializeWindshieldDecal(ID, ExtractLastName(text).c_str());
+	}
+
+	int (__stdcall* orgGetTextWidth)(const char* text, void* data);
+	int __stdcall GetTextWidth_ExtractLastName(const char* text, void* data)
+	{
+		return orgGetTextWidth(ExtractLastName(text).c_str(), data);
+	}
+}
+
 void OnInitializeHook()
 {
 	bool hookUnits = false, forcedMirrors = false;
@@ -1006,6 +1054,40 @@ void OnInitializeHook()
 		void* mirrorEntry = static_cast<char*>(entriesInfoPtr) + 1132*mirror_surface_id;
 		uint16_t* size = reinterpret_cast<uint16_t*>(static_cast<char*>(mirrorEntry) + 4);
 		*size = InCarMirrorRes;
+	}
+	TXN_CATCH();
+
+	// Allow for more characters in names (and for longer names)
+	try
+	{
+		using namespace LongerUserNames;
+
+		auto is_legal_name_char = get_pattern("85 C0 75 09 83 FB 08 0F 85 ? ? ? ? A1 ? ? ? ? 33 C9", -5);
+		auto get_typed_key = get_pattern("66 89 44 24 ? E8 ? ? ? ? E8 ? ? ? ? 8B D8", 5 + 5);
+		auto max_name_length = get_pattern("83 F8 ? 7D 4D", 2);
+		auto get_decal_width = get_pattern("F3 A4 E8 ? ? ? ? 33 C9 3D", 2);
+
+		void* init_decals[] = {
+			get_pattern("50 53 E8 ? ? ? ? E9", 2),
+			get_pattern("E8 ? ? ? ? E9 ? ? ? ? 83 FF FF"),
+			get_pattern("E8 ? ? ? ? 8B 6C 24 10 33 C9"),
+		};
+
+		InjectHook(is_legal_name_char, IsLegalCharForName);
+
+		ReadCall(get_typed_key, orgGetTypedKey);
+		InjectHook(get_typed_key, GetTypedKey_ConvertToChar);
+
+		ReadCall(init_decals[0], orgInitializeWindshieldDecal);
+		for (void* addr : init_decals)
+		{
+			InjectHook(addr, InitializeWindshieldDecal_SkipDot);
+		}
+
+		Patch<uint8_t>(max_name_length, 15);
+
+		ReadCall(get_decal_width, orgGetTextWidth);
+		InjectHook(get_decal_width, GetTextWidth_ExtractLastName);
 	}
 	TXN_CATCH();
 }
