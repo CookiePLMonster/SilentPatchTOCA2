@@ -140,6 +140,8 @@ namespace Timers
 			QueryPerformanceCounter(&startTime);
 			do
 			{
+				_mm_pause();
+
 				LARGE_INTEGER time;
 				QueryPerformanceCounter(&time);
 				diffTime = time.QuadPart - startTime.QuadPart;
